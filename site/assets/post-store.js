@@ -79,5 +79,10 @@ export function safeRichHtml(html = '') {
   template.content.querySelectorAll('*').forEach((node) => [...node.attributes].forEach((attribute) => {
     if (attribute.name.startsWith('on') || (['href','src'].includes(attribute.name) && /^\s*javascript:/i.test(attribute.value))) node.removeAttribute(attribute.name);
   }));
+  template.content.querySelectorAll('a').forEach((anchor) => {
+    const href = anchor.getAttribute('href') || '';
+    if (!((href.startsWith('/') && !href.startsWith('//')) || /^https?:\/\//i.test(href))) anchor.removeAttribute('href');
+    else { anchor.target = '_blank'; anchor.rel = 'noopener noreferrer'; }
+  });
   return template.innerHTML;
 }

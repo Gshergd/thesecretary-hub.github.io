@@ -1,6 +1,6 @@
 import { statusApi } from './api.js';
 import { esc, formatDate, mountLayout } from './layout.js?v=4.5.0';
-import { getPostBySlug, safeRichHtml } from './post-store.js';
+import { getPostBySlug, safeRichHtml } from './post-store.js?v=post-links-1.0.0';
 
 const root = document.querySelector('[data-content-root]');
 const query = new URLSearchParams(location.search);
@@ -34,7 +34,7 @@ try {
     document.body.classList.add('post-reading-mode');
     const readerStyle = document.createElement('link');
     readerStyle.rel = 'stylesheet';
-    readerStyle.href = '/assets/post-reader.css?v=1.3.0';
+    readerStyle.href = '/assets/post-reader.css?v=post-links-1.0.0';
     document.head.append(readerStyle);
     root.innerHTML = `<main class="post-story-page"><article class="post-story"><img class="post-story-hero" src="${esc(item.full_thumb_url || '/assets/images/post-fallback-full.webp')}" alt=""><header class="post-story-header"><div class="post-story-tag">Posts <span>/</span> The Secretary</div><h1>${esc(item.title)}</h1>${item.excerpt ? `<p>${esc(item.excerpt)}</p>` : ''}<time>${formatDate(item.published_at, { dateStyle: 'long' })}</time></header><div class="post-story-body rich-content">${safeRichHtml(item.content_html || '')}</div></article></main>`;
     bindPostImageLightbox();
