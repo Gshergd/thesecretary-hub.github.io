@@ -11,6 +11,7 @@ const STATUS_CONFIG = {
     maintenance: ['id', 'slug', 'json', 'updatedAt'],
     posts: ['id', 'slug', 'json', 'updatedAt'],
     hostSwitches: ['id', 'slug', 'json', 'updatedAt'],
+    serverExclusions: ['id', 'slug', 'json', 'updatedAt'],
     subscribers: ['userId', 'email', 'active', 'createdAt'],
   },
 };
@@ -20,7 +21,7 @@ const HOST_CONFIG = {
   VALIDATION_MINUTES: 5,
   AUTOMATIC_OFFLINE_HOURS: 48,
   MANUAL_RATE_LIMIT_MINUTES: 20,
-  MAX_AUTOMATIC_SWITCHES: 2,
+  MAX_AUTOMATIC_SWITCHES: 4,
   DEFAULT_BANDWIDTH_GB: 5,
   DEFAULT_PIPELINE_MINUTES: 500,
   INVENTORY_CACHE_MINUTES: 10,
@@ -103,7 +104,7 @@ function route_(action, data, isPost) {
       case 'subscription_status': result = subscriptionStatus_(accountUser); break;
       case 'toggle_account_subscription': result = toggleAccountSubscription_(accountUser); break;
       case 'check_now':
-        result = runScheduledChecks();
+        result = runScheduledChecks(true);
         if (result && result.skipped) throw new Error('A monitoring run is already in progress. Wait a moment and try again.');
         break;
       case 'send_otp': result = sendOtp_(data.code); break;
@@ -137,7 +138,7 @@ function route_(action, data, isPost) {
   }
 }
 
-function runScheduledChecks() {
+function runScheduledChecks(manual) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(2000)) return {skipped: true};
   try {
@@ -147,9 +148,13 @@ function runScheduledChecks() {
     const http = probeHttp_(settings.targetUrl);
     const discord = probeDiscord_(settings.discordStatusUrl);
     appendCheck_(http, discord);
+    if (manual !== true) {
+      const props = PropertiesService.getScriptProperties();
+      props.setProperty('HOST_HTTP_FAILURES', String(http.up ? 0 : Number(props.getProperty('HOST_HTTP_FAILURES') || 0) + 1));
+    }
     processHttpTransition_(http, settings);
     processDiscordTransition_(discord, settings);
-    processHostAutomation_(http, discord, settings);
+    processHostAutomation_(http, discord, settings, manual === true);
     pruneChecks_();
     return {
       checkedAt: http.checkedAt,
@@ -201,7 +206,7 @@ function processHttpTransition_(result, settings) {
   if (!result.up) failures += 1; else failures = 0;
   props.setProperty('HTTP_FAILURES', String(failures));
   if (!result.up && !wasDown && !maintenanceActive && failures >= Number(settings.failureThreshold || 1)) {
-    const incident = createIncident_({title: 'The Secretary is unavailable', slug: uniqueSlug_('incidents', 'service-unavailable-' + Utilities.formatDate(new Date(), STATUS_CONFIG.TIMEZONE, 'yyyy-MM-dd-HHmm')), impact: 'critical', source: 'http', message: 'Automated monitoring detected a failed HTTP health check' + (result.statusCode ? ' (HTTP ' + result.statusCode + ').' : '.'), excerpt: 'Automated monitoring detected that The Secretary could not be reached.', content_html: '<h2>What happened</h2><p>The five-minute availability monitor could not complete a successful request. Developers have been notified and are investigating.</p>'}, true).item;
+    const incident = createIncident_({title: 'The Secretary is unreachable', slug: uniqueSlug_('incidents', 'service-unavailable-' + Utilities.formatDate(new Date(), STATUS_CONFIG.TIMEZONE, 'yyyy-MM-dd-HHmm')), impact: 'critical', source: 'http', message: 'Automated monitoring detected a failed HTTP health check' + (result.statusCode ? ' (HTTP ' + result.statusCode + ').' : '.'), excerpt: 'Automated monitoring detected that The Secretary could not be reached.', content_html: '<h2>What happened</h2><p>The five-minute availability monitor could not complete a successful request. Developers have been notified and are investigating.</p>'}, true).item;
     props.setProperties({HTTP_DOWN: '1', HTTP_INCIDENT_ID: incident.id});
     deliverAutomatedEvent_('http_down', incident, settings, 'incidents');
   } else if (result.up && wasDown && !hostSwitchBlocksRecovery_()) {
@@ -238,7 +243,7 @@ function statusPayload_(admin) {
   const activeIncidents = incidents.filter(function (x) { return x.status !== 'resolved'; });
   const activeMaintenance = maintenance.filter(function (x) { return x.status === 'active' || x.status === 'scheduled'; });
   let status = latest ? (latest.up ? 'operational' : 'down') : 'unknown';
-  let headline = status === 'operational' ? 'All systems operational' : (status === 'unknown' ? 'Awaiting the first check' : 'The Secretary is unavailable');
+  let headline = status === 'operational' ? 'All systems operational' : (status === 'unknown' ? 'Awaiting the first check' : 'The Secretary is unreachable');
   let message = status === 'operational' ? 'The Secretary is responding normally.' : (status === 'unknown' ? 'Monitoring data will appear after setup completes.' : 'Automated monitoring detected an availability issue.');
   if (discord.rateLimited || ['down','major_outage','critical','unavailable'].indexOf(discord.state) >= 0) { status = 'down'; headline = 'Discord API disruption'; message = 'Discord is reporting an API disruption.'; }
   else if (discord.state === 'degraded' || discord.state === 'minor') { status = 'maintenance'; headline = 'Discord API degraded'; message = 'Discord is reporting degraded API performance.'; }
@@ -250,7 +255,7 @@ function statusPayload_(admin) {
   const publicIncidents = incidents.filter(function (item) { return new Date(item.startedAt || item.updatedAt).getTime() >= publicCutoff; });
   const publicMaintenance = maintenance.filter(function (item) { return new Date(item.endAt || item.startAt || item.updatedAt).getTime() >= publicCutoff; });
   const historyEvents = incidents.filter(function(item){return new Date(item.startedAt||item.updatedAt).getTime()>=historyCutoff;}).map(function(item){return{recordType:'incident',title:item.title,impact:item.impact,status:item.status,source:item.source,startedAt:item.startedAt,resolvedAt:item.resolvedAt};}).concat(maintenance.filter(function(item){return new Date(item.startAt||item.updatedAt).getTime()>=historyCutoff;}).map(function(item){return{recordType:'maintenance',title:item.title,status:item.status,startAt:item.startAt,endAt:item.endAt};}));
-  const payload = {generatedAt: new Date().toISOString(), monitor: monitor, summary: {status: status, headline: headline, message: message}, discordApi: discord, servers: publicServerStatus_(), incidents: admin ? incidents.slice(0,250) : publicIncidents, maintenance: admin ? maintenance.slice(0,250) : publicMaintenance, historyEvents:historyEvents, posts: posts.slice(0, admin ? 250 : 6)};
+  const payload = {generatedAt: new Date().toISOString(), monitor: monitor, summary: {status: status, headline: headline, message: message}, discordApi: discord, servers: publicServerStatus_(), incidents: admin ? incidents.slice(0,250) : publicIncidents, maintenance: admin ? maintenance.slice(0,250) : publicMaintenance, historyEvents:historyEvents.concat(serverExclusionHistory_()), posts: posts.slice(0, admin ? 250 : 6)};
   if (admin) Object.assign(payload, {settings: settings, recentChecks: checks.slice(-50).reverse(), subscriberCount: activeSubscribers_().length, webhooks: {http: settings.webhookHttp, discord: settings.webhookDiscord, post: settings.webhookPost, maintenance: settings.webhookMaintenance}, webhookTemplates: getTemplates_(), deliveryIssues: collectDeliveryIssues_(incidents, maintenance), hostManagement: getServerAdminPayload_(false)});
   return payload;
 }
@@ -325,6 +330,8 @@ function addIncidentUpdate_(data) {
 
 function resolveIncident_(id, message) {
   const item = findRecordById_('incidents', id); if (!item) return null;
+  if (item.source === 'http') item.title = 'The Secretary was unreachable';
+  if (item.source === 'discord') item.title = 'Discord API was rate limited';
   item.status = 'resolved'; item.resolvedAt = new Date().toISOString(); item.updatedAt = item.resolvedAt; item.updates.push({status:'resolved',message:message,createdAt:item.resolvedAt}); writeRecord_('incidents',item); return item;
 }
 
@@ -482,7 +489,7 @@ function updateMaintenanceStates_(settings) {
   });
 }
 
-function updateSettings_(data) { const settings=getSettings_();settings.monitorName=cleanText_(data.monitor_name,80)||settings.monitorName;settings.description=cleanText_(data.description,240);settings.targetUrl=validHttps_(data.target_url);settings.discordStatusUrl=validHttps_(data.discord_status_url);settings.failureThreshold=Math.max(1,Math.min(3,Number(data.failure_threshold)||1));saveSettings_(settings);return{settings:settings}; }
+function updateSettings_(data) { const settings=getSettings_();settings.monitorName=cleanText_(data.monitor_name,80)||settings.monitorName;if(data.description!==undefined)settings.description=cleanText_(data.description,240);if(data.target_url!==undefined)settings.targetUrl=validHttps_(data.target_url);if(data.discord_status_url!==undefined)settings.discordStatusUrl=validHttps_(data.discord_status_url);if (data.host_failure_threshold !== undefined) { const threshold=Number(data.host_failure_threshold); if (!Number.isInteger(threshold)||threshold<1||threshold>5) throw new Error('Choose 1 to 5 failed checks.'); settings.hostFailureThreshold=threshold; } if(data.failure_threshold!==undefined) settings.failureThreshold=Math.max(1,Math.min(3,Number(data.failure_threshold)||1));saveSettings_(settings);return{settings:settings}; }
 function updateWebhooks_(data) { const settings=getSettings_();['http','discord','post','maintenance'].forEach(function(k){settings['webhook'+capitalize_(k)]=validWebhook_(data['webhook_'+k]);});saveSettings_(settings);const templates=getTemplates_();Object.keys(DEFAULT_TEMPLATES).forEach(function(k){templates[k]=cleanText_(data['template_'+k],4000)||DEFAULT_TEMPLATES[k];});saveSettingMap_('template.',templates);return{}; }
 
 function archivePayload_(type) { const map={incidents:'incidents',maintenance:'maintenance',posts:'posts'};if(!map[type])throw new Error('Unknown archive.');return{type:type,items:sortRecords_(readRecords_(map[type]),type==='posts'?'publishedAt':type==='maintenance'?'startAt':'startedAt')}; }
@@ -503,7 +510,7 @@ function notifyEvent_(event, item, settings, channels) {
     maintenance_end: settings.webhookMaintenance
   };
   const subjectMap = {
-    http_down: 'The Secretary is unavailable',
+    http_down: 'The Secretary is unreachable',
     http_up: 'The Secretary is back online',
     discord_limited: 'Discord API rate limited',
     discord_normal: 'Discord API is back to normal',
@@ -645,7 +652,7 @@ function collectDeliveryIssues_(incidents, maintenance) {
   return issues.sort(function (a, b) { return new Date(b.attemptedAt || 0) - new Date(a.attemptedAt || 0); }).slice(0, 20);
 }
 
-function processHostAutomation_(http, discord, settings) {
+function processHostAutomation_(http, discord, settings, manual) {
   let state = getHostSwitchState_();
   if (state) {
     try {
@@ -655,7 +662,7 @@ function processHostAutomation_(http, discord, settings) {
       state.stepFailures = Number(state.stepFailures || 0) + 1;
       state.updatedAt = new Date().toISOString();
       saveHostSwitchState_(state);
-      if (state.stepFailures >= 3) enterHostEmergency_(state, 'Host-switch step failed repeatedly: ' + state.lastError);
+      if (state.stepFailures >= 3) retryOrEmergency_(state, 'Host-switch step failed repeatedly: ' + state.lastError);
     }
     return;
   }
@@ -668,14 +675,14 @@ function processHostAutomation_(http, discord, settings) {
     return;
   }
   clearHostTopologyUnavailable_();
-  if (!topology.consistent) {
+  if (!topology.consistent && !recoverableSuspendedTopology_(topology)) {
     noteHostTopologyMismatch_(topology.error);
     return;
   }
   clearHostTopologyEmergency_();
 
   const props = PropertiesService.getScriptProperties();
-  const failureActive = props.getProperty('HTTP_DOWN') === '1' || props.getProperty('DISCORD_LIMITED') === '1';
+  const failureActive = (!manual && !http.up && Number(props.getProperty('HOST_HTTP_FAILURES') || 0) >= Number(settings.hostFailureThreshold || 1)) || props.getProperty('DISCORD_LIMITED') === '1';
   if (!failureActive) {
     props.deleteProperty('HOST_AUTOMATION_EMERGENCY');
     enforceStandbySuspension_();
@@ -691,7 +698,8 @@ function processHostAutomation_(http, discord, settings) {
   try {
     startAutomaticHostSwitch_(reason);
   } catch (error) {
-    enterHostEmergency_(null, reason + ' ' + (error.message || String(error)));
+    if (/^No eligible standby/.test(error.message || '')) enterHostEmergency_(null, reason + ' ' + error.message);
+    else noteHostTopologyUnavailable_('Failover preparation will retry on the next check: ' + (error.message || String(error)));
   }
 }
 
@@ -717,9 +725,14 @@ function editMaintenance_(data) {
 
 function startAutomaticHostSwitch_(reason) {
   const inventory = refreshServerInventory_();
-  const activeKey = requireConsistentActiveServer_(getServerRuntimeStates_());
+  const topology = inspectHostTopology_(getServerRuntimeStates_());
+  if (!topology.consistent && !recoverableSuspendedTopology_(topology)) throw new Error(topology.error);
+  const activeKey = topology.activeKey || topology.dnsKey;
   const candidate = selectBestServer_(inventory, [activeKey]);
-  if (!candidate) throw new Error('No eligible standby server is available.');
+  if (!candidate) {
+    if (inventory.some(function(server){return server.error;})) throw new Error('Standby inventory is temporarily incomplete; retrying on the next check.');
+    throw new Error('No eligible standby server is available.');
+  }
   const now = new Date().toISOString();
   const state = {
     id: Utilities.getUuid(), mode: 'automatic', reason: cleanText_(reason, 500), phase: 'preparing',
@@ -803,7 +816,7 @@ function advanceHostSwitch_(state, http, discord, settings) {
   clearHostTopologyUnavailable_();
   if (!topology.consistent || topology.activeKey !== state.targetKey) {
     const topologyError = topology.error || 'Expected ' + state.targetKey + ' to own DNS and be the single resumed Render service.';
-    if (noteHostTopologyMismatch_(topologyError)) return enterHostEmergency_(state, 'Post-switch topology mismatch: ' + topologyError);
+    if (noteHostTopologyMismatch_(topologyError)) return retryOrEmergency_(state, 'Post-switch topology mismatch: ' + topologyError);
     state.lastError = 'Waiting for a second topology check: ' + topologyError;
     state.updatedAt = new Date().toISOString();
     saveHostSwitchState_(state);
@@ -826,8 +839,10 @@ function performHostCutover_(state) {
   if (!targetHost) throw new Error('The target server hostname is not configured.');
 
   writeHostSwitchLog_(state, 'removing_domains', 'Removing custom domains from ' + source.name + '.');
-  HOST_CONFIG.DOMAINS.forEach(function (domain) {
-    deleteRenderDomain_(source, domain);
+  (state.triedKeys || [source.key]).filter(function(key,index,keys){return key!==target.key && keys.indexOf(key)===index;}).forEach(function(key){
+    const previous = requireServerByKey_(key);
+    HOST_CONFIG.DOMAINS.forEach(function(domain){deleteRenderDomain_(previous,domain);});
+    setRenderSuspended_(previous,true);
   });
 
   writeHostSwitchLog_(state, 'suspending_source', 'Suspending ' + source.name + '.');
@@ -880,7 +895,7 @@ function retryOrEmergency_(state, reason) {
   const inventory = refreshServerInventory_();
   const candidate = selectBestServer_(inventory, state.triedKeys || []);
   if (!candidate) return enterHostEmergency_(state, state.lastError + ' No additional eligible server is available.');
-  state.sourceKey = PropertiesService.getScriptProperties().getProperty('HOST_ACTIVE_KEY') || state.targetKey;
+  state.sourceKey = state.phase === 'validating' ? state.targetKey : state.sourceKey;
   state.targetKey = candidate.key;
   state.triedKeys = (state.triedKeys || []).concat([candidate.key]);
   state.attempts += 1;
@@ -890,11 +905,13 @@ function retryOrEmergency_(state, reason) {
   state.validateAfter = '';
   state.updatedAt = new Date().toISOString();
   saveHostSwitchState_(state);
-  writeHostSwitchLog_(state, 'retrying', 'Starting final automatic attempt on ' + candidate.name + '.');
+  writeHostSwitchLog_(state, 'retrying', 'Starting next host-switch attempt on ' + candidate.name + '.');
   try {
     beginHostSwitchAttempt_(state);
   } catch (error) {
-    enterHostEmergency_(state, 'Final host-switch attempt could not start: ' + (error.message || String(error)));
+    state.lastError = error.message || String(error);
+    state.stepFailures = 1;
+    saveHostSwitchState_(state);
   }
 }
 
@@ -1076,7 +1093,7 @@ function selectBestServer_(inventory, excludedKeys) {
   (excludedKeys || []).forEach(function (key) { excluded[key] = true; });
   const offline = getOfflineServers_();
   return inventory.filter(function (server) {
-    return !excluded[server.key] && !offline[server.key] && !server.error && Number.isFinite(Number(server.bandwidthRemainingBytes));
+    return !excluded[server.key] && !offline[server.key] && !server.error && server.bandwidthRemainingBytes != null && Number.isFinite(Number(server.bandwidthRemainingBytes)) && Number(server.bandwidthRemainingBytes) > 0;
   }).sort(function (a, b) {
     const bandwidth = Number(b.bandwidthRemainingBytes) - Number(a.bandwidthRemainingBytes);
     if (bandwidth !== 0) return bandwidth;
@@ -1098,9 +1115,15 @@ function discoverActiveServerKey_(inventory) {
 
 function requireConsistentActiveServer_(inventory) {
   const topology = inspectHostTopology_(inventory);
-  if (!topology.consistent) throw new Error(topology.error);
-  PropertiesService.getScriptProperties().setProperty('HOST_ACTIVE_KEY', topology.activeKey);
-  return topology.activeKey;
+  if (!topology.consistent && !recoverableSuspendedTopology_(topology)) throw new Error(topology.error);
+  const activeKey = topology.activeKey || topology.dnsKey;
+  PropertiesService.getScriptProperties().setProperty('HOST_ACTIVE_KEY', activeKey);
+  return activeKey;
+}
+
+// A provider-suspended DNS owner is a failed source we can safely replace.
+function recoverableSuspendedTopology_(topology) {
+  return Boolean(topology.dnsKey && topology.runningKeys.length === 0 && topology.records.every(function(record){return record.target && record.target === topology.records[0].target;}));
 }
 
 function inspectHostTopology_(inventory) {
@@ -1204,16 +1227,23 @@ function setServerOffline_(serverKey, hours, reason) {
 }
 
 function setServerOfflineInternal_(serverKey, hours, reason, source) {
+  serverExclusionHistory_();
   const offline = getOfflineServers_();
+  closeServerExclusion_(serverKey);
+  const startedAt = new Date().toISOString();
+  const until = new Date(Date.now() + Number(hours) * 3600000).toISOString();
+  writeRecord_('serverExclusions', {id:Utilities.getUuid(),slug:'',recordType:'exclusion',serverKey:serverKey,startedAt:startedAt,resolvedAt:until,updatedAt:startedAt});
   offline[serverKey] = {until:new Date(Date.now() + Number(hours) * 3600000).toISOString(),reason:cleanText_(reason,500),source:source||'manual',createdAt:new Date().toISOString()};
   PropertiesService.getScriptProperties().setProperty('HOST_OFFLINE_JSON', JSON.stringify(offline));
   return {serverKey:serverKey,offline:offline[serverKey]};
 }
 
 function clearServerOffline_(serverKey) {
+  serverExclusionHistory_();
   serverKey = String(serverKey || '').trim();
   requireServerByKey_(serverKey);
   const offline = getOfflineServers_();
+  closeServerExclusion_(serverKey);
   delete offline[serverKey];
   PropertiesService.getScriptProperties().setProperty('HOST_OFFLINE_JSON', JSON.stringify(offline));
   return {serverKey:serverKey};
@@ -1470,7 +1500,7 @@ function migrateSubscriberSheet_(sheet) { const expected=STATUS_CONFIG.SHEETS.su
 function getDb_() { const id=PropertiesService.getScriptProperties().getProperty('STATUS_SPREADSHEET_ID');if(!id)throw new Error('Run setupStatusBackend once before deployment.');return SpreadsheetApp.openById(id); }
 function getSheet_(name) { const sheet=getDb_().getSheetByName(name);if(!sheet)throw new Error('Missing data sheet: '+name);return sheet; }
 function readSettings_() { const rows=getSheet_('settings').getDataRange().getValues();const out={};for(let i=1;i<rows.length;i++)if(rows[i][0])out[String(rows[i][0])]=String(rows[i][1]);return out; }
-function getSettings_() { const raw=readSettings_();return {monitorName:raw.monitorName||DEFAULT_SETTINGS.monitorName,description:raw.description||DEFAULT_SETTINGS.description,targetUrl:raw.targetUrl||DEFAULT_SETTINGS.targetUrl,discordStatusUrl:raw.discordStatusUrl||DEFAULT_SETTINGS.discordStatusUrl,failureThreshold:Number(raw.failureThreshold||1),webhookHttp:raw.webhookHttp||'',webhookDiscord:raw.webhookDiscord||'',webhookPost:raw.webhookPost||'',webhookMaintenance:raw.webhookMaintenance||''}; }
+function getSettings_() { const raw=readSettings_();return {monitorName:raw.monitorName||DEFAULT_SETTINGS.monitorName,description:raw.description||DEFAULT_SETTINGS.description,targetUrl:raw.targetUrl||DEFAULT_SETTINGS.targetUrl,discordStatusUrl:raw.discordStatusUrl||DEFAULT_SETTINGS.discordStatusUrl,failureThreshold:Number(raw.failureThreshold||1),hostFailureThreshold:Math.max(1,Math.min(5,Number(raw.hostFailureThreshold)||1)),webhookHttp:raw.webhookHttp||'',webhookDiscord:raw.webhookDiscord||'',webhookPost:raw.webhookPost||'',webhookMaintenance:raw.webhookMaintenance||''}; }
 function saveSettings_(settings) { const current=readSettings_();Object.keys(settings).forEach(function(k){current[k]=String(settings[k]);});saveSettingMap_('',current); }
 function saveSettingMap_(prefix,map) { const sheet=getSheet_('settings');const rows=sheet.getDataRange().getValues();const index={};for(let i=1;i<rows.length;i++)index[String(rows[i][0])]=i+1;Object.keys(map).forEach(function(k){const key=prefix+k;if(index[key])sheet.getRange(index[key],2).setValue(String(map[k]));else sheet.appendRow([key,String(map[k])]);}); }
 function getTemplates_() { const raw=readSettings_();const out={};Object.keys(DEFAULT_TEMPLATES).forEach(function(k){out[k]=raw['template.'+k]||DEFAULT_TEMPLATES[k];});return out; }
@@ -1479,7 +1509,7 @@ function appendCheck_(http,discord) { getSheet_('checks').appendRow([http.checke
 function getChecks_() { const rows=getSheet_('checks').getDataRange().getValues();return rows.slice(1).filter(function(r){return r[0];}).map(function(r){return{checkedAt:new Date(r[0]).toISOString(),up:r[1]===true||String(r[1]).toLowerCase()==='true',statusCode:r[2]===''?null:Number(r[2]),responseMs:r[3]===''?null:Number(r[3]),error:String(r[4]||''),discordRateLimited:r[5]===true||String(r[5]).toLowerCase()==='true',discordState:String(r[6]||'unknown'),discordCheckedAt:r[7]?new Date(r[7]).toISOString():null};}); }
 function pruneChecks_() { const sheet=getSheet_('checks');const rows=sheet.getDataRange().getValues();const cutoff=Date.now()-STATUS_CONFIG.RETENTION_DAYS*86400000;let remove=0;for(let i=1;i<rows.length;i++){if(new Date(rows[i][0]).getTime()<cutoff)remove++;else break;}if(remove>0)sheet.deleteRows(2,remove); }
 
-function readRecords_(name) { const rows=getSheet_(name).getDataRange().getValues();return rows.slice(1).map(function(r){try{return JSON.parse(String(r[2]||'{}'));}catch(error){return null;}}).filter(Boolean); }
+function readRecords_(name) { const rows=getSheet_(name).getDataRange().getValues();return rows.slice(1).map(function(r){try{const item=JSON.parse(String(r[2]||'{}'));if(name==='incidents'){if(item.source==='http'&&/^The Secretary (is|was) (unavailable|unreachable)$/.test(item.title||''))item.title=item.resolvedAt?'The Secretary was unreachable':'The Secretary is unreachable';if(item.source==='discord'&&/^Discord API (was )?rate limited$/.test(item.title||'')&&item.resolvedAt)item.title='Discord API was rate limited';}return item;}catch(error){return null;}}).filter(Boolean); }
 function writeRecord_(name,item) { const sheet=getSheet_(name);const rows=sheet.getDataRange().getValues();for(let i=1;i<rows.length;i++){if(String(rows[i][0])===String(item.id)){sheet.getRange(i+1,1,1,4).setValues([[item.id,item.slug,JSON.stringify(item),item.updatedAt||new Date().toISOString()]]);return;}}sheet.appendRow([item.id,item.slug,JSON.stringify(item),item.updatedAt||new Date().toISOString()]); }
 function deleteRecord_(name,id) { const sheet=getSheet_(name);const rows=sheet.getDataRange().getValues();for(let i=1;i<rows.length;i++){if(String(rows[i][0])===String(id)){sheet.deleteRow(i+1);return;}}throw new Error('Record not found.'); }
 function findRecordById_(name,id) { return readRecords_(name).find(function(x){return String(x.id)===String(id);})||null; }
@@ -1531,3 +1561,16 @@ function requireAdmin_(accessToken) {
   return user;
 }
 function json_(data) { return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON); }
+
+function closeServerExclusion_(serverKey) {
+  const now = new Date().toISOString();
+  readRecords_('serverExclusions').filter(function(item){return item.serverKey===serverKey && new Date(item.resolvedAt).getTime()>Date.now();}).forEach(function(item){item.resolvedAt=now;item.updatedAt=now;writeRecord_('serverExclusions',item);});
+}
+function serverExclusionHistory_() {
+  const cutoff=Date.now()-130*86400000;
+  const history=readRecords_('serverExclusions');
+  // Migrate any active holds created before history recording was installed.
+  const offline=getOfflineServers_();
+  Object.keys(offline).forEach(function(key){const hold=offline[key];if(!history.some(function(item){return item.serverKey===key && new Date(item.resolvedAt).getTime()>Date.now();})){const item={id:Utilities.getUuid(),slug:'',recordType:'exclusion',serverKey:key,startedAt:hold.createdAt||new Date().toISOString(),resolvedAt:hold.until,updatedAt:new Date().toISOString()};writeRecord_('serverExclusions',item);history.push(item);}});
+  return history.filter(function(item){return new Date(item.resolvedAt).getTime()>=cutoff;});
+}

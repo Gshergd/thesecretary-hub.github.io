@@ -12,8 +12,11 @@ const dateKey = (value) => { const parts = new Intl.DateTimeFormat('en-CA', {tim
 const recordStart = (item) => item.startedAt || item.startAt || item.updatedAt;
 const recordEnd = (item) => item.recordType === 'maintenance' ? item.endAt : item.resolvedAt;
 const durationMs = (item) => Math.max(0, (recordEnd(item) ? new Date(recordEnd(item)).getTime() : Date.now()) - new Date(recordStart(item)).getTime());
-const recordTone = (item) => item.recordType === 'maintenance' ? 'maintenance' : item.impact === 'critical' || item.impact === 'major' ? durationMs(item) > FOUR_HOURS ? 'outage' : 'major-short' : 'degraded';
-const dayTone = (records) => { const tones = records.map(recordTone); return tones.includes('outage') ? 'outage' : tones.includes('major-short') ? 'major-short' : tones.includes('maintenance') ? 'maintenance' : tones.includes('degraded') ? 'degraded' : 'operational'; };
+const dayTone = (records) => {
+  const incidents=records.filter(item=>item.recordType==='incident');
+  if(incidents.length){const total=incidents.reduce((sum,item)=>sum+(item.dayDurationMs??durationMs(item)),0);return total<40*60000?'incident-short':total>FOUR_HOURS?'outage':'major-short';}
+  return records.some(item=>item.recordType==='maintenance')?'maintenance':'operational';
+};
 const monthStart = (value) => new Date(value.getFullYear(), value.getMonth(), 1);
 const shiftMonth = (value, amount) => new Date(value.getFullYear(), value.getMonth() + amount, 1);
 const localDateFromKey = (key) => { const [year, month, day] = key.split('-').map(Number); return new Date(year, month - 1, day, 12); };
@@ -24,7 +27,15 @@ function calendarArchive(items) {
   let rangeEnd = currentMonth;
   let selectedKey = '';
   const byDay = new Map();
-  items.forEach((item) => { const key = dateKey(recordStart(item)); if (!byDay.has(key)) byDay.set(key, []); byDay.get(key).push(item); });
+  items.forEach(item=>{
+    const start=new Date(recordStart(item)).getTime(), end=Math.min(recordEnd(item)?new Date(recordEnd(item)).getTime():Date.now(),Date.now());
+    if(!Number.isFinite(start)||!Number.isFinite(end))return;
+    for(let day=new Date(`${dateKey(start)}T00:00:00+05:30`).getTime();day<=end;day+=86400000){
+      const duration=Math.max(0,Math.min(end,day+86400000)-Math.max(start,day));
+      if(!duration && day!==start)continue;
+      const key=dateKey(day);if(!byDay.has(key))byDay.set(key,[]);byDay.get(key).push({...item,dayDurationMs:duration});
+    }
+  });
   byDay.forEach((records) => records.sort((a, b) => new Date(recordStart(a)) - new Date(recordStart(b))));
 
   root.innerHTML = `<main class="incident-calendar-page"><header class="incident-calendar-hero"><span class="eyebrow">The Secretary systems</span><h1>Incident history</h1><p>Explore service availability, incidents, and scheduled maintenance by day.</p></header><section class="incident-calendar-shell"><div class="calendar-toolbar"><div><span>Availability archive</span><strong data-calendar-range></strong></div><nav aria-label="Change calendar period"><button type="button" data-calendar-prev aria-label="Previous three months">←</button><button type="button" data-calendar-next aria-label="Next three months">→</button></nav></div><div class="calendar-months" data-calendar-months></div><div class="calendar-day-panel" data-calendar-day-panel hidden></div></section></main>`;
@@ -42,7 +53,7 @@ function calendarArchive(items) {
       const summary = item.excerpt || item.description || item.note || item.updates?.at(-1)?.message || (item.recordType === 'maintenance' ? 'Scheduled maintenance.' : 'View the complete incident report.');
       const start = formatDate(recordStart(item), {hour:'2-digit',minute:'2-digit'});
       const end = recordEnd(item) ? formatDate(recordEnd(item), {hour:'2-digit',minute:'2-digit'}) : 'Ongoing';
-      return `<a class="calendar-event ${recordTone(item)}" href="${href}"><span>${item.recordType === 'maintenance' ? 'Maintenance' : item.impact === 'critical' || item.impact === 'major' ? 'Major incident' : 'Incident'}</span><h3>${esc(item.title)}</h3><p>${esc(summary)}</p><time>${esc(start)} – ${esc(end)}</time><b aria-hidden="true">↗</b></a>`;
+      return `<a class="calendar-event ${item.recordType === 'maintenance' ? 'maintenance' : dayTone(records)}" href="${href}"><span>${item.recordType === 'maintenance' ? 'Maintenance' : item.impact === 'critical' || item.impact === 'major' ? 'Major incident' : 'Incident'}</span><h3>${esc(item.title)}</h3><p>${esc(summary)}</p><time>${esc(start)} – ${esc(end)}</time><b aria-hidden="true">↗</b></a>`;
     });
     dayPanel.hidden = false;
     dayPanel.innerHTML = `<header><span>Selected day</span><h2>${esc(formatDate(date, {dateStyle:'long'}))}</h2><p>${records.length ? `${records.length} service ${records.length === 1 ? 'event' : 'events'} recorded` : 'No downtime recorded on this day.'}</p></header>${records.length ? `<div class="calendar-event-list">${cards.slice(0,3).join('')}${cards.length > 3 ? `<details><summary>+ Show all ${cards.length} events</summary>${cards.slice(3).join('')}</details>` : ''}</div>` : '<div class="calendar-clean-day"><i></i><strong>All systems remained operational.</strong></div>'}`;

@@ -26,3 +26,9 @@ body.status-public-mode:before,body.status-public-mode:after{display:none}
 .status-subscribe-dialog{width:min(430px,calc(100% - 30px));padding:0;border:1px solid #bbb;border-radius:5px;background:#fff;color:#111}.status-subscribe-dialog::backdrop{background:rgba(0,0,0,.7)}.status-subscribe-dialog form{position:relative;display:grid;gap:14px;padding:32px}.status-subscribe-dialog h2,.status-subscribe-dialog p{margin:0}.status-subscribe-dialog input{height:45px;padding:0 12px;border:1px solid #aaa}.status-subscribe-dialog [type="submit"]{height:45px;border:0;background:#111;color:#fff;font-weight:700;cursor:pointer}.status-dialog-close{position:absolute;top:10px;right:12px;border:0;background:transparent;font-size:24px;cursor:pointer}.status-subscribe-dialog small{min-height:18px;color:#555}
 @media(max-width:700px){.status-public-page{padding:98px 14px 80px}.status-top{margin-bottom:10px}.overall-status{font-size:17px}.uptime-caption{margin-top:60px}.service-list{overflow-x:auto}.status-service{min-width:690px}.metrics-section,.past-incidents{margin-top:75px}.response-chart{padding:15px}.metrics-section>header{align-items:flex-start;gap:18px;flex-direction:column}.status-history-foot{gap:8px}}
 .status-record.maintenance h4{color:#ff7a1a}
+
+/* Incident severity follows combined duration for the day; exclusions stay orange. */
+.status-history i.incident-short{background:#c7c9ce}
+.status-record.incident.incident-short h4,.history-tooltip-events p.incident-short b{color:#c7c9ce}
+.status-record.incident.major-short h4{color:#f6a623}
+.status-record.incident.outage h4{color:#ff4545}

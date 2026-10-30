@@ -10,7 +10,7 @@ mobileHistory.addEventListener('change', () => refreshHistory());
 const root = document.querySelector('[data-status-root]');
 document.body.classList.add('status-public-mode');
 
-const stateClass = (state) => state === 'operational' ? 'operational' : state === 'maintenance' ? 'maintenance' : state === 'major-short' ? 'major-short' : state === 'degraded' ? 'degraded' : state === 'unknown' ? 'unknown' : 'outage';
+const stateClass = (state) => state === 'operational' ? 'operational' : state === 'maintenance' ? 'maintenance' : state === 'incident-short' ? 'incident-short' : state === 'major-short' ? 'major-short' : state === 'degraded' ? 'degraded' : state === 'unknown' ? 'unknown' : 'outage';
 const stateLabel = (state) => state === 'operational' ? 'Operational' : state === 'maintenance' ? 'Maintenance' : state === 'degraded' ? 'Degraded' : state === 'unknown' ? 'Awaiting data' : 'Disruption';
 const STATUS_TIME_ZONE = 'Asia/Kolkata';
 const MAJOR_OUTAGE_RED_AFTER_MS = 4 * 60 * 60 * 1000;
@@ -33,13 +33,16 @@ const defaultServers = [
   ['ohio','The-Secretary Ohio US','Ohio US'],
 ].map(([key,name,region]) => ({key,name,region,status:'operational',label:'Operational'}));
 
-function eventsForServiceDay(kind, date, events = []) {
-  if(kind === 'server') return [];
+function eventsForServiceDay(kind, date, events = [], serverKey) {
+  const start = new Date(`${dayKey(date)}T00:00:00+05:30`).getTime();
+  const end = Math.min(start + 86400000, Date.now());
   return events.filter(event => {
-    if(dayKey(new Date(event.startedAt || event.startAt)) !== dayKey(date)) return false;
-    if(event.recordType === 'maintenance') return true;
+    if (eventStartTime(event) >= end || eventEndTime(event) <= start) return false;
+    if (kind === 'server') return event.recordType === 'exclusion' && event.serverKey === serverKey;
+    if (event.recordType === 'exclusion') return false;
+    if (event.recordType === 'maintenance' || kind === 'all') return true;
     return kind === 'discord' ? event.source === 'discord' : event.source !== 'discord';
-  });
+  }).map(event => ({...event, dayDurationMs:Math.max(0, Math.min(eventEndTime(event), end) - Math.max(eventStartTime(event), start))}));
 }
 
 const eventStartTime = (event) => new Date(event.startedAt || event.startAt || event.updatedAt).getTime();
@@ -51,11 +54,13 @@ const eventEndTime = (event) => {
 const eventDurationMs = (event) => Math.max(0, eventEndTime(event) - eventStartTime(event));
 const isMajorIncident = (event) => event.recordType === 'incident' && (event.impact === 'critical' || event.impact === 'major');
 const historyStateForEvents = (events) => {
-  const major = events.filter(isMajorIncident).sort((a, b) => eventDurationMs(b) - eventDurationMs(a))[0];
-  if (major) return eventDurationMs(major) > MAJOR_OUTAGE_RED_AFTER_MS ? 'outage' : 'major-short';
-  if (events.some((event) => event.recordType === 'incident')) return 'degraded';
-  if (events.some((event) => event.recordType === 'maintenance')) return 'maintenance';
-  return 'operational';
+  if (events.some(event => event.recordType === 'exclusion')) return 'major-short';
+  const incidents = events.filter(event => event.recordType === 'incident');
+  if (incidents.length) {
+    const total = incidents.reduce((sum, event) => sum + (event.dayDurationMs ?? eventDurationMs(event)), 0);
+    return total < 40 * 60000 ? 'incident-short' : total > MAJOR_OUTAGE_RED_AFTER_MS ? 'outage' : 'major-short';
+  }
+  return events.some(event => event.recordType === 'maintenance') ? 'maintenance' : 'operational';
 };
 
 function serviceHistory(service, monitor, events = []) {
@@ -63,18 +68,18 @@ function serviceHistory(service, monitor, events = []) {
     const date = statusDateAtOffset(historyDays() - 1 - index);
     let state = 'operational';
     let uptimeValue = 100;
-    const dailyEvents = service.kind === 'server' ? [] : eventsForServiceDay(service.kind, date, events);
-    if (dailyEvents.length) { state = historyStateForEvents(dailyEvents); uptimeValue = null; }
+    const dailyEvents = eventsForServiceDay(service.kind, date, events, service.key);
+    if (dailyEvents.length) { state = historyStateForEvents(service.kind === 'server' ? dailyEvents : eventsForServiceDay('all', date, events)); uptimeValue = null; }
     if (index === historyDays() - 1 && service.state !== 'operational' && !dailyEvents.length) state = service.state;
     const value = uptimeValue === null || uptimeValue === undefined ? stateLabel(state) : `${Number(uptimeValue).toFixed(3)}%`;
-    return `<i class="${stateClass(state)}" data-history-kind="${service.kind}" data-history-day="${dayKey(date)}" data-history-date="${esc(formatDate(date, {dateStyle:'long'}))}" data-history-value="${esc(value)}"></i>`;
+    return `<i class="${stateClass(state)}" data-history-server="${esc(service.key || '')}" data-history-kind="${service.kind}" data-history-day="${dayKey(date)}" data-history-date="${esc(formatDate(date, {dateStyle:'long'}))}" data-history-value="${esc(value)}"></i>`;
   }).join('');
 }
 
 function serviceRow(service, monitor, events) {
   const uptime = service.kind === 'website' ? monitor.uptime?.[String(historyDays())] : service.uptime;
   const detail = service.offlineUntil ? ` until ${formatDate(service.offlineUntil, {dateStyle:'medium',timeStyle:'short'})}` : '';
-  return `<article class="status-service"><div class="status-service-head"><h2>${esc(service.name)}</h2><span class="${stateClass(service.state)}">${esc(service.label || stateLabel(service.state))}${esc(detail)}</span></div><div class="status-history" aria-label="${historyDays()}-day status history">${serviceHistory(service, monitor, events)}</div><div class="status-history-foot"><span>${mobileHistory.matches ? "30 days" : "90 days ago"}</span><b></b><span>${service.kind === 'server' ? '100.0% uptime' : uptime === null || uptime === undefined ? (mobileHistory.matches ? 'Uptime unavailable' : 'No outages recorded') : `${Number(uptime).toFixed(2)}% uptime`}</span><b></b><span>Today</span></div></article>`;
+  return `<article class="status-service"><div class="status-service-head"><h2>${esc(service.name)}</h2><span class="${stateClass(service.state)}">${esc(service.label || stateLabel(service.state))}${esc(detail)}</span></div><div class="status-history" aria-label="${historyDays()}-day status history">${serviceHistory(service, monitor, events)}</div><div class="status-history-foot"><span>${mobileHistory.matches ? "30 days" : "90 days ago"}</span><b></b><span>${service.kind === 'server' ? 'Exclusion history' : uptime === null || uptime === undefined ? (mobileHistory.matches ? 'Uptime unavailable' : 'No outages recorded') : `${Number(uptime).toFixed(2)}% uptime`}</span><b></b><span>Today</span></div></article>`;
 }
 
 function incidentDays(incidents = [], maintenance = []) {
@@ -85,7 +90,7 @@ function incidentDays(incidents = [], maintenance = []) {
     const body = daily.length ? daily.map((item) => {
       if (item.recordType === 'maintenance') return `<a class="status-record maintenance" href="/maintenance/${encodeURIComponent(item.slug)}"><h4>${esc(item.title)}</h4><p><strong>${esc(item.status || 'Scheduled')}</strong> - ${esc(item.note || item.description || item.excerpt || '')}</p><time>${formatDate(item.startAt, {dateStyle:'medium',timeStyle:'short'})}</time></a>`;
       const updates = [...(item.updates || [])].reverse();
-      return `<a class="status-record incident" href="/incidents/${encodeURIComponent(item.slug)}"><h4>${esc(item.title)}</h4>${updates.map((update) => `<p><strong>${esc(update.status)}</strong> - ${esc(update.message)}</p><time>${formatDate(update.createdAt, {dateStyle:'medium',timeStyle:'short'})}</time>`).join('')}</a>`;
+      return `<a class="status-record incident ${historyStateForEvents(eventsForServiceDay('all', date, records.filter(record=>record.recordType==='incident').map(record=>({...record,source:'http'}))))}" href="/incidents/${encodeURIComponent(item.slug)}"><h4>${esc(item.title)}</h4>${updates.map((update) => `<p><strong>${esc(update.status)}</strong> - ${esc(update.message)}</p><time>${formatDate(update.createdAt, {dateStyle:'medium',timeStyle:'short'})}</time>`).join('')}</a>`;
     }).join('') : `<p class="no-incidents">${index === 0 ? 'No incidents reported today.' : 'No incidents reported.'}</p>`;
     return `<section class="incident-day"><h3>${formatDate(date, {dateStyle:'medium',timeZone:STATUS_TIME_ZONE})}</h3>${body}</section>`;
   }).join('');
@@ -106,16 +111,18 @@ function durationText(startValue, endValue) {
 
 function historyTooltip(bar, data) {
   const source = data.historyEvents || [...(data.incidents || []).map(item=>({...item,recordType:'incident'})),...(data.maintenance || []).map(item=>({...item,recordType:'maintenance'}))];
-  const relevant=eventsForServiceDay(bar.dataset.historyKind,new Date(`${bar.dataset.historyDay}T00:00:00Z`),source).sort((a,b)=>eventStartTime(a)-eventStartTime(b));
+  const relevant=eventsForServiceDay(bar.dataset.historyKind,new Date(`${bar.dataset.historyDay}T12:00:00+05:30`),source,bar.dataset.historyServer).sort((a,b)=>eventStartTime(a)-eventStartTime(b));
   const events = relevant.map((item) => {
     if (item.recordType === 'maintenance') return {label:'Maintenance', duration:durationText(item.startAt, item.status === 'completed' ? item.endAt : null), tone:'maintenance'};
-    const major = isMajorIncident(item);
-    return {label:major ? 'Major outage' : 'Partial outage', duration:durationText(item.startedAt, item.resolvedAt), tone:major ? (eventDurationMs(item) > MAJOR_OUTAGE_RED_AFTER_MS ? 'major-long' : 'major-short') : 'partial'};
+    const tone = historyStateForEvents(bar.dataset.historyKind === 'server' ? relevant : eventsForServiceDay('all', new Date(`${bar.dataset.historyDay}T12:00:00+05:30`), source));
+    const minutes = Math.round(item.dayDurationMs / 60000);
+    return {label:item.recordType === 'exclusion' ? 'Server excluded' : tone === 'incident-short' ? 'Brief outage' : 'Major outage', duration:`${Math.floor(minutes / 60)} hrs ${minutes % 60} mins`, tone:tone === 'outage' ? 'major-long' : tone};
   });
   if (!events.length) {
     const cleanDay = /^100(?:\.0+)?%$/.test(bar.dataset.historyValue);
     return `<span>${esc(bar.dataset.historyDate)}</span><strong>${cleanDay ? 'No downtime recorded on this day.' : esc(bar.dataset.historyValue)}</strong>`;
   }
+  if (bar.dataset.historyKind === 'server') return `<span>${esc(bar.dataset.historyDate)}</span><div class="history-tooltip-events">${events.map(event=>`<p class="major-short"><b>●</b><strong>Server excluded</strong><em>${esc(event.duration)}</em></p>`).join('')}</div>`;
   const relatedTitle = relevant[0]?.title || (relevant[0]?.recordType === 'maintenance' ? 'Scheduled maintenance' : 'Service incident');
   return `<span>${esc(bar.dataset.historyDate)}</span><div class="history-tooltip-events">${events.map(event => `<p class="${event.tone}"><b>${event.label === 'Major outage' ? '×' : event.label === 'Maintenance' ? '●' : '▲'}</b><strong>${esc(event.label)}</strong><em>${esc(event.duration)}</em></p>`).join('')}</div><small>Related</small><div class="history-tooltip-related">${esc(relatedTitle)}</div>`;
 }
@@ -176,6 +183,10 @@ function drawChart(data, range = 'day') {
 }
 
 function render(data, accountUser) {
+  [data.incidents, data.historyEvents].forEach(items => (items || []).forEach(item => {
+    if (item.source === 'http' && /^The Secretary (is|was) (unavailable|unreachable)$/.test(item.title || '')) item.title = item.resolvedAt ? 'The Secretary was unreachable' : 'The Secretary is unreachable';
+    if (item.source === 'discord' && /^Discord API (was )?rate limited$/.test(item.title || '') && item.resolvedAt) item.title = 'Discord API was rate limited';
+  }));
   const monitor = data.monitor || {};
   const discordState = data.discordApi?.rateLimited ? 'outage' : ['operational','normal','ok','none'].includes(data.discordApi?.state) ? 'operational' : data.discordApi?.state === 'degraded' || data.discordApi?.state === 'minor' ? 'degraded' : !data.discordApi?.state || data.discordApi.state === 'unknown' ? 'unknown' : 'outage';
   const services = [{name:'TheSecretary.xyz Website',kind:'website',state:monitor.status || 'unknown',uptime:monitor.uptime?.['90']},{name:'The Secretary™ Discord',kind:'discord',state:discordState,uptime:null},...((data.servers?.length ? data.servers : defaultServers).map((server) => ({...server,kind:'server',state:server.status || 'operational'})))];
