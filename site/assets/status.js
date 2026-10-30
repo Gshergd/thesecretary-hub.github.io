@@ -40,7 +40,8 @@ function eventsForServiceDay(kind, date, events = [], serverKey) {
     if (eventStartTime(event) >= end || eventEndTime(event) <= start) return false;
     if (kind === 'server') return event.recordType === 'exclusion' && event.serverKey === serverKey;
     if (event.recordType === 'exclusion') return false;
-    if (event.recordType === 'maintenance' || kind === 'all') return true;
+    if (event.recordType === 'maintenance') return kind === 'discord' || kind === 'all';
+    if (kind === 'all') return true;
     return kind === 'discord' ? event.source === 'discord' : event.source !== 'discord';
   }).map(event => ({...event, dayDurationMs:Math.max(0, Math.min(eventEndTime(event), end) - Math.max(eventStartTime(event), start))}));
 }
@@ -189,7 +190,7 @@ function render(data, accountUser) {
   }));
   const monitor = data.monitor || {};
   const discordState = data.discordApi?.rateLimited ? 'outage' : ['operational','normal','ok','none'].includes(data.discordApi?.state) ? 'operational' : data.discordApi?.state === 'degraded' || data.discordApi?.state === 'minor' ? 'degraded' : !data.discordApi?.state || data.discordApi.state === 'unknown' ? 'unknown' : 'outage';
-  const services = [{name:'TheSecretary.xyz Website',kind:'website',state:monitor.status || 'unknown',uptime:monitor.uptime?.['90']},{name:'The Secretary™ Discord',kind:'discord',state:discordState,uptime:null},...((data.servers?.length ? data.servers : defaultServers).map((server) => ({...server,kind:'server',state:server.status || 'operational'})))];
+  const services = [{name:'https://thesecretary.xyz/',kind:'website',state:monitor.status || 'unknown',uptime:monitor.uptime?.['90']},{name:'The Secretary™ Discord',kind:'discord',state:discordState,uptime:null},...((data.servers?.length ? data.servers : defaultServers).map((server) => ({...server,kind:'server',state:server.status || 'operational'})))];
   const availabilityServices = services.filter((item) => item.kind === 'website' || item.kind === 'discord');
   const overall = availabilityServices.some((item) => stateClass(item.state) === 'outage') ? 'outage' : availabilityServices.some((item) => stateClass(item.state) === 'degraded') ? 'degraded' : 'operational';
   (data.incidents||[]).forEach(item=>sessionStorage.setItem(`status-record:incident:${item.slug}`,JSON.stringify(item)));
