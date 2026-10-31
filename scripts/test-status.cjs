@@ -33,5 +33,16 @@ Object.assign(bctx,{getHostSwitchState_:()=>null,inspectHostTopology_:()=>({cons
 props.HOST_HTTP_FAILURES='2';bctx.processHostAutomation_({up:false},{},{hostFailureThreshold:3},false);assert.equal(switches,0);
 props.HOST_HTTP_FAILURES='3';bctx.processHostAutomation_({up:false},{},{hostFailureThreshold:3},false);assert.equal(switches,1);assert.equal(emergencies,0);
 bctx.processHostAutomation_({up:false},{},{hostFailureThreshold:3},true);assert.equal(switches,1);
-props.DISCORD_LIMITED='1';bctx.processHostAutomation_({up:true},{},{hostFailureThreshold:5},true);assert.equal(switches,2);
+props.DISCORD_LIMITED='1';props.HOST_DISCORD_FAILURES='1';
+bctx.processHostAutomation_({up:true},{rateLimited:true},{hostFailureThreshold:2},false);assert.equal(switches,1);
+props.HOST_DISCORD_FAILURES='2';
+bctx.processHostAutomation_({up:true},{rateLimited:true},{hostFailureThreshold:2},false);assert.equal(switches,2);
+bctx.processHostAutomation_({up:true},{rateLimited:true},{hostFailureThreshold:2},true);assert.equal(switches,2);
+bctx.processHostAutomation_({up:true},{rateLimited:false},{hostFailureThreshold:2},false);assert.equal(switches,2);
+// Execute the real scheduled runner to verify independent counters reset and manual checks are ignored.
+Object.assign(bctx,{LockService:{getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})},initializeSheets_:()=>{},getSettings_:()=>({hostFailureThreshold:2}),updateMaintenanceStates_:()=>{},probeHttp_:()=>({up:true}),probeDiscord_:()=>({rateLimited:false}),appendCheck_:()=>{},processHttpTransition_:()=>{},processDiscordTransition_:()=>{},processHostAutomation_:()=>{},pruneChecks_:()=>{},sanitizeSwitchState_:()=>null});
+bctx.runScheduledChecks();assert.equal(props.HOST_DISCORD_FAILURES,'0');assert.equal(props.HOST_HTTP_FAILURES,'0');
+bctx.probeDiscord_=()=>({rateLimited:true});bctx.runScheduledChecks();assert.equal(props.HOST_DISCORD_FAILURES,'1');
+bctx.runScheduledChecks(true);assert.equal(props.HOST_DISCORD_FAILURES,'1');
+bctx.runScheduledChecks();assert.equal(props.HOST_DISCORD_FAILURES,'2');
 console.log('PASS: syntax, daily totals/boundaries, midnight splitting, exclusion persistence, server isolation, suspended-owner recovery, bandwidth filtering, scheduled-only threshold, Discord failover.');

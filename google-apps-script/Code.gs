@@ -151,6 +151,7 @@ function runScheduledChecks(manual) {
     if (manual !== true) {
       const props = PropertiesService.getScriptProperties();
       props.setProperty('HOST_HTTP_FAILURES', String(http.up ? 0 : Number(props.getProperty('HOST_HTTP_FAILURES') || 0) + 1));
+      props.setProperty('HOST_DISCORD_FAILURES', String(discord.rateLimited ? Number(props.getProperty('HOST_DISCORD_FAILURES') || 0) + 1 : 0));
     }
     processHttpTransition_(http, settings);
     processDiscordTransition_(discord, settings);
@@ -682,7 +683,10 @@ function processHostAutomation_(http, discord, settings, manual) {
   clearHostTopologyEmergency_();
 
   const props = PropertiesService.getScriptProperties();
-  const failureActive = (!manual && !http.up && Number(props.getProperty('HOST_HTTP_FAILURES') || 0) >= Number(settings.hostFailureThreshold || 1)) || props.getProperty('DISCORD_LIMITED') === '1';
+  const threshold = Number(settings.hostFailureThreshold || 1);
+  const httpFailure = !http.up && Number(props.getProperty('HOST_HTTP_FAILURES') || 0) >= threshold;
+  const discordFailure = discord.rateLimited && Number(props.getProperty('HOST_DISCORD_FAILURES') || 0) >= threshold;
+  const failureActive = !manual && (httpFailure || discordFailure);
   if (!failureActive) {
     props.deleteProperty('HOST_AUTOMATION_EMERGENCY');
     enforceStandbySuspension_();
@@ -692,7 +696,7 @@ function processHostAutomation_(http, discord, settings, manual) {
   const maintenanceActive = readRecords_('maintenance').some(function (item) { return item.status === 'active'; });
   if (maintenanceActive) return;
 
-  const reason = props.getProperty('DISCORD_LIMITED') === '1'
+  const reason = discordFailure
     ? 'Automatic failover: Discord API rate limit detected.'
     : 'Automatic failover: public HTTP health check failed.';
   try {

@@ -1,4 +1,4 @@
-:root{--status-maintenance:#2453a6;--status-green:#3da85f;--status-yellow:#d2a52b;--status-orange:#ed8a28;--status-red:#d94d4d}
+:root{--status-maintenance:#3da85f;--status-green:#3da85f;--status-yellow:#d2a52b;--status-orange:#ed8a28;--status-red:#d94d4d}
 body.status-public-mode{background:#000;color:#fff}
 body.status-public-mode:before,body.status-public-mode:after{display:none}
 .status-page-loader{display:grid;place-content:center;justify-items:center;gap:16px;min-height:78vh;background:#000;color:#999}.status-page-loader span{width:34px;height:34px;border:3px solid #282828;border-top-color:#fff;border-radius:50%;animation:status-spin .75s linear infinite}.status-page-loader p{margin:0;font-size:12px;letter-spacing:.12em;text-transform:uppercase}@keyframes status-spin{to{transform:rotate(360deg)}}
