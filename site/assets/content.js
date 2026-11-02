@@ -1,3 +1,4 @@
+import { formatStatusText } from './status-text.js?v=1';
 import { statusApi } from './api.js';
 import { esc, formatDate, mountLayout } from './layout.js?v=4.5.0';
 import { getPostBySlug, safeRichHtml } from './post-store.js?v=post-links-1.0.0';
@@ -13,7 +14,7 @@ if(type === 'incident' || type === 'maintenance'){
   document.body.classList.add('status-detail-mode');
   const detailStyle = document.createElement('link');
   detailStyle.rel = 'stylesheet';
-  detailStyle.href = '/assets/status-detail.css?v=1.1.0';
+  detailStyle.href = '/assets/status-detail.css?v=1.2.0';
   document.head.append(detailStyle);
   root.innerHTML = '<main class="status-detail-loader" aria-live="polite"><span></span><p>Loading status report…</p></main>';
 }
@@ -51,7 +52,7 @@ try {
         {label:'Maintenance Scheduled',message:item.scheduledMessage || 'Maintenance is scheduled.',time:item.createdAt || item.startAt},
       ];
     }
-    root.innerHTML = `<main class="status-detail-page ${type}-detail"><nav><a href="/status/">← Status</a></nav><article><header><h1>${esc(item.title)}</h1><p>${type === 'incident' ? 'Incident report for' : 'Maintenance report for'} ${esc(source)}</p></header><section class="status-detail-timeline">${rows.map(row => `<div class="status-detail-row"><h2>${esc(row.label)}</h2><div><p>${esc(row.message)}</p><time>Posted ${formatDate(row.time, {dateStyle:'medium',timeStyle:'short'})}</time></div></div>`).join('')}</section></article></main>`;
+    root.innerHTML = `<main class="status-detail-page ${type}-detail"><nav><a href="/status/">← Status</a></nav><article><header><h1>${esc(item.title)}</h1><p>${type === 'incident' ? 'Incident report for' : 'Maintenance report for'} ${esc(source)}</p>${type==='incident'&&item.excerpt?`<div class="status-public-summary">${formatStatusText(item.excerpt)}</div>`:''}</header><section class="status-detail-timeline">${rows.map(row => `<div class="status-detail-row"><h2>${esc(row.label)}</h2><div><div class="status-message">${formatStatusText(row.message)}</div><time>Posted ${formatDate(row.time, {dateStyle:'medium',timeStyle:'short'})}</time></div></div>`).join('')}</section></article></main>`;
   }
 } catch (error) { root.innerHTML = `<main class="container page"><section class="not-found-panel"><span class="eyebrow">404</span><h1>Page unavailable</h1><p>${esc(error.message)}</p><a class="button primary" href="/">Return home</a></section></main>`; }
 
@@ -59,7 +60,7 @@ try {
 function updatePageMetadata(item, contentType) {
   const isPost = contentType === 'post';
   const fallback = `Read this ${contentType} update from The Secretary.`;
-  const description = String(isPost ? (item.excerpt || 'Read the latest post from The Secretary Hub.') : (item.note || item.description || item.message || fallback)).replace(/\s+/g, ' ').trim().slice(0, 200);
+  const description = String(isPost ? (item.excerpt || 'Read the latest post from The Secretary Hub.') : (item.excerpt || item.note || item.description || item.message || fallback)).replace(/\s+/g, ' ').trim().slice(0, 200);
   const image = new URL(isPost ? (item.full_thumb_url || '/assets/images/post-fallback-full.webp') : '/assets/images/meta-status.png', location.origin).href;
   const named = { description, 'theme-color': '#F4FEB0', 'twitter:card': 'summary_large_image', 'twitter:title': item.title, 'twitter:description': description, 'twitter:image': image };
   Object.entries(named).forEach(([name, content]) => upsertMeta('name', name, content));

@@ -313,7 +313,7 @@ function editIncident_(data) {
   const updates=[];
   ['investigating','identified','monitoring','resolved'].forEach(function(status){const message=cleanText_(data[status+'_message'],3000);if(message)updates.push({status:status,message:message,createdAt:existing[status]&&existing[status].createdAt||new Date().toISOString()});});
   if(!updates.length)throw new Error('At least one incident update is required.');
-  item.updates=updates;item.status=updates[updates.length-1].status;item.resolvedAt=item.status==='resolved'?(existing.resolved&&existing.resolved.createdAt||new Date().toISOString()):null;item.excerpt=cleanText_(data.excerpt||updates[0].message,300);item.updatedAt=new Date().toISOString();
+  item.updates=updates;item.status=updates[updates.length-1].status;item.resolvedAt=item.status==='resolved'?(existing.resolved&&existing.resolved.createdAt||new Date().toISOString()):null;item.excerpt=cleanText_(data.excerpt!==undefined?data.excerpt:(item.excerpt||updates[0].message),300);item.updatedAt=new Date().toISOString();
   writeRecord_('incidents',item);
   if(previousStatus!=='resolved'&&item.status==='resolved')notifyEvent_(item.source==='discord'?'discord_normal':'http_up',item,getSettings_());
   return{item:item};
@@ -845,7 +845,10 @@ function performHostCutover_(state) {
   writeHostSwitchLog_(state, 'removing_domains', 'Removing custom domains from ' + source.name + '.');
   (state.triedKeys || [source.key]).filter(function(key,index,keys){return key!==target.key && keys.indexOf(key)===index;}).forEach(function(key){
     const previous = requireServerByKey_(key);
-    HOST_CONFIG.DOMAINS.forEach(function(domain){deleteRenderDomain_(previous,domain);});
+    HOST_CONFIG.DOMAINS.forEach(function(domain){
+      writeHostSwitchLog_(state, 'removing_domain', 'Removing ' + domain + ' from ' + previous.name + '.');
+      deleteRenderDomain_(previous,domain);
+    });
     setRenderSuspended_(previous,true);
   });
 
@@ -857,16 +860,20 @@ function performHostCutover_(state) {
 
   writeHostSwitchLog_(state, 'updating_dns', 'Pointing Cloudflare DNS to ' + targetHost + '.');
   HOST_CONFIG.DOMAINS.forEach(function (domain) {
+    writeHostSwitchLog_(state, 'updating_dns_record', 'Updating CNAME ' + domain + ' to ' + targetHost + '.');
     updateCloudflareRecord_(domain, targetHost);
   });
+  writeHostSwitchLog_(state, 'verifying_dns', 'Verifying Cloudflare records point to ' + targetHost + '.');
   verifyCloudflareTargets_(targetHost);
 
   writeHostSwitchLog_(state, 'adding_domains', 'Adding custom domains to ' + target.name + '.');
   HOST_CONFIG.DOMAINS.forEach(function (domain) {
+    writeHostSwitchLog_(state, 'adding_domain', 'Attaching ' + domain + ' to ' + target.name + '.');
     ensureRenderDomain_(target, domain);
   });
 
   HOST_CONFIG.DOMAINS.forEach(function (domain) {
+    writeHostSwitchLog_(state, 'verifying_domain', 'Requesting Render verification for ' + domain + '.');
     renderRequest_(target, '/services/' + encodeURIComponent(target.serviceId) + '/custom-domains/' + encodeURIComponent(domain) + '/verify', 'post', null, [200, 202]);
   });
 

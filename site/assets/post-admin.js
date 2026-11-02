@@ -238,7 +238,9 @@ function bind(root, posts) {
   if (!form.elements.slug.value) form.elements.title.addEventListener('input', () => { form.elements.slug.value = slugify(form.elements.title.value); });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const button = form.querySelector(`[data-save-status="${submitStatus}"]`); button.disabled = true;
+    if(form.dataset.pending)return;
+    const button = form.querySelector(`[data-save-status="${submitStatus}"]`);
+    const restore=postBusy(button,form,"Saving…");
     try {
       await imageUploadQueue;
       const existing = posts.find((post) => post.id === form.elements.id.value);
@@ -262,20 +264,21 @@ function bind(root, posts) {
         showToast(failures.length ? `Post published. ${failures.join(' · ')}` : 'Post published and sent to Discord and subscribers.', failures.length ? 'error' : undefined);
       } else showToast(submitStatus === 'published' ? 'Post updated without sending duplicate notifications.' : 'Draft saved.');
       await render(root);
-    } catch (error) { showToast(error.message, 'error'); button.disabled = false; }
+    } catch (error) { showToast(error.message, 'error'); } finally { restore(); }
   });
   root.querySelectorAll('[data-edit-post]').forEach((button) => button.onclick = () => render(root, posts.find((post) => post.id === button.dataset.editPost)));
   root.querySelectorAll('[data-notify-post]').forEach((button) => button.onclick = async () => {
     const post = posts.find((item) => item.id === button.dataset.notifyPost);
     if (!post) return;
-    button.disabled = true;
+    if(button.disabled)return;
+    const restore=postBusy(button,button.parentElement,"Sending…");
     try {
       await notifyPost(post, button.dataset.channel);
       showToast(button.dataset.channel === 'discord' ? 'Post sent to Discord.' : 'Post emailed to subscribers.');
       await render(root);
-    } catch (error) { showToast(error.message, 'error'); button.disabled = false; }
+    } catch (error) { showToast(error.message, 'error'); } finally { restore(); }
   });
-  root.querySelectorAll('[data-delete-post]').forEach((button) => button.onclick = async () => { if (!confirm('Delete this post permanently?')) return; try { await deletePost(button.dataset.deletePost); showToast('Post deleted.'); await render(root); } catch (error) { showToast(error.message, 'error'); } });
+  root.querySelectorAll('[data-delete-post]').forEach((button) => button.onclick = async () => { if (button.disabled||!confirm('Delete this post permanently?')) return; const restore=postBusy(button,button.parentElement,'Deleting…'); try { await deletePost(button.dataset.deletePost); showToast('Post deleted.'); await render(root); } catch (error) { showToast(error.message, 'error'); } finally { restore(); } });
 }
 
 function postCard(post) {
@@ -290,4 +293,10 @@ async function notifyPost(post, channel) {
   const result = await statusApi('notify_post', { channel, id: post.id, slug: post.slug, title: post.title, excerpt: post.excerpt });
   await markPostNotified(post.id, channel, result.deliveredAt || new Date().toISOString());
   return result;
+}
+
+function postBusy(button,scope,message){
+ const buttons=[...scope.querySelectorAll('button')],disabled=buttons.map(b=>b.disabled),label=button.innerHTML;
+ scope.dataset.pending='true';scope.setAttribute('aria-busy','true');buttons.forEach(b=>b.disabled=true);button.classList.add('is-loading');button.textContent=message;
+ return()=>{delete scope.dataset.pending;scope.removeAttribute('aria-busy');buttons.forEach((b,i)=>b.disabled=disabled[i]);button.classList.remove('is-loading');button.innerHTML=label;};
 }

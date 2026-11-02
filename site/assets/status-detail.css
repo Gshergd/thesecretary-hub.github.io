@@ -8,3 +8,4 @@ body.status-detail-mode:before,body.status-detail-mode:after{display:none}
 @media(max-width:650px){.status-detail-page{width:min(100% - 28px,880px);padding-top:95px}.status-detail-page>nav{margin-bottom:38px}.status-detail-timeline{margin-top:48px}.status-detail-row{grid-template-columns:1fr;gap:8px;padding-bottom:24px;border-bottom:1px solid #292929}}
 .status-detail-page.incident-detail article>header h1{color:#ff496c}
 .status-detail-page.maintenance-detail article>header h1{color:#ff7a1a}
+.status-public-summary{margin:24px 0;padding:20px 0;border-top:1px solid #333;font-size:17px;line-height:1.7}.status-message{overflow-wrap:anywhere}.status-message p{white-space:pre-wrap}.status-message blockquote{padding-left:16px;border-left:2px solid currentColor}.status-message h3{font-size:19px}
